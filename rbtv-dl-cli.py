@@ -112,8 +112,7 @@ def download_stream(base_url, output_file=None):
         .output(
             'pipe:', 
             format='mp4',
-            vcodec='copy',
-            acodec='copy',
+            **{'c': 'copy', 'bsf:a': 'aac_adtstoasc'},
             movflags='frag_keyframe+empty_moov+default_base_moof',
             loglevel='error'
         )
