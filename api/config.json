@@ -1,0 +1,3 @@
+{
+    "apiAllowedOrigin": ["https://example.com", "*"]
+}
