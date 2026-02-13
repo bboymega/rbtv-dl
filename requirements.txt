@@ -6,6 +6,7 @@ charset-normalizer==3.4.4
 click==8.3.1
 ffmpeg-python==0.2.0
 Flask==3.1.2
+flask-cors==6.0.2
 future==1.0.0
 gevent==25.9.1
 greenlet==3.3.1
