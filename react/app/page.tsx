@@ -20,7 +20,7 @@ export default function VideoConverter() {
   const [videoData, setVideoData] = useState<null | { title: string; video_url: string; video_thumbnail: string }>(null);
   const [error, setError] = useState<null | string>(null);
   const [copied, setCopied] = useState(false);
-  const apiBase = config.apiBase;
+  const apiBase = config.apiBase.replace(/\/+$/, "");
   
   const handleParse = async (e: React.SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
