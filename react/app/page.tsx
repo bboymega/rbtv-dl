@@ -11,7 +11,6 @@ import {
   faCheck,
   faPlay
 } from '@fortawesome/free-solid-svg-icons';
-import config from './config.json';
 
 export default function VideoConverter() {
   const [url, setUrl] = useState('');
@@ -20,7 +19,6 @@ export default function VideoConverter() {
   const [videoData, setVideoData] = useState<null | { title: string; video_url: string; video_thumbnail: string }>(null);
   const [error, setError] = useState<null | string>(null);
   const [copied, setCopied] = useState(false);
-  const apiBase = config.apiBase.replace(/\/+$/, "");
   
   const handleParse = async (e: React.SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -29,7 +27,7 @@ export default function VideoConverter() {
     setIsParsing(true);
     setVideoData(null);
     try {
-      const response = await fetch(apiBase + '/api/download?url=' + url + '&probe=1', {
+      const response = await fetch('/api/download?url=' + url + '&probe=1', {
         method: 'GET',
       });
 
@@ -184,7 +182,7 @@ export default function VideoConverter() {
                       )}
                     </button>
                     <a 
-                      href= {`${apiBase}/api/download?url=${encodeURIComponent(url)}`}
+                      href= {`/api/download?url=${encodeURIComponent(url)}`}
                       className={`btn btn-sm ${isWaitingDownload ? 'btn-secondary' : 'btn-outline-secondary'}`}
                       onClick={() => handleDownload()}
                     >
