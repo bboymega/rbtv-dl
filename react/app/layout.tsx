@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RBTV Converter",
-  description: "RBTV Converter",
+  title: "RBTV-DL",
+  description: "RBTV-DL",
 };
 
 export default function RootLayout({

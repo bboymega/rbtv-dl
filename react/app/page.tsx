@@ -77,7 +77,7 @@ export default function VideoConverter() {
         <div className="col-12 col-md-8 col-lg-6">
           
           <div className="text-center mb-5">
-            <h1 className="display-5 fw-bold text-dark">RBTV Converter</h1>
+            <h1 className="display-5 fw-bold text-dark">RBTV-DL</h1>
           </div>
 
           <div className="card shadow border-0 p-3 p-md-4 mb-4">
