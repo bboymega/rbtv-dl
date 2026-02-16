@@ -1,7 +1,7 @@
 # Red Bull TV Downloader
 Red Bull TV Downloader available as both a CLI tool and a Web UI. Built with React/Next.js and Python-Flask
 
-![RBTV-DL](screenshot.png)
+![RBTV-DL](screenshot-rbtv-dl.png)
 
 # Quick Start: Web UI (Docker):
 Run the container:
