@@ -7,7 +7,6 @@ import string
 import re
 import unicodedata
 import sys
-from flask_cors import CORS
 from datetime import datetime
 from werkzeug.middleware.proxy_fix import ProxyFix
 import json
