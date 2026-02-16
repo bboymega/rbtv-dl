@@ -12,24 +12,9 @@ from datetime import datetime
 from werkzeug.middleware.proxy_fix import ProxyFix
 import json
 
-config_file = 'config.json'
 def create_app():
     app = Flask(__name__)
-    with open(config_file, "r") as f:
-        config = json.load(f)
-        allowed_origins = []
-        if(config.get("apiAllowedOrigin")):
-            origin = config.get("apiAllowedOrigin")
-            if isinstance(origin, list):
-                allowed_origins.extend(origin)
-            else:
-                allowed_origins.append(origin)
-        if config.get("apiBase"):
-            allowed_origins.append(config.get("apiBase"))
-
-        if allowed_origins:
-            CORS(app, resources={r"/*": {"origins": allowed_origins}})
-        app.wsgi_app = ProxyFix(
+    app.wsgi_app = ProxyFix(
         app.wsgi_app, 
         x_for=1, 
         x_proto=1, 
