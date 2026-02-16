@@ -4,7 +4,7 @@ Red Bull TV Downloader in Cli and Web UI. Built with Next.js, Flask, and FFmpeg.
 # Quick Start: Web UI (Docker):
 Run the container:
 ```
-docker run -d -p 8080:8080 bboymega/rbtv-dl
+docker run -d -p 8080:8080 bboymega/rbtv-dl:1.0
 ```
 and open http://127.0.0.1:8080 in your browser. You should be able to access the WebUI locally.
 
