@@ -128,7 +128,7 @@ def download_stream():
     is_probe = request.args.get('probe')
 
     if is_probe == 1 or is_probe == '1':
-        print(f"{datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')} {request.remote_addr} \"INFO: M3U stream found for /{url}\"")
+        print(f"{datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')} {request.remote_addr} \"INFO: M3U stream found for /{url}\"", flush=True)
         return jsonify({
             "status": "success",
             "title": video_title,
@@ -191,7 +191,7 @@ def download_stream():
                 process.stdout.close()
                 process.stderr.close()
 
-    print(f"{datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')} {request.remote_addr} \"INFO: Converting /{url}\"")
+    print(f"{datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')} {request.remote_addr} \"INFO: Converting /{url}\"", flush=True)
     return Response(
         stream_with_context(generate()),
         mimetype='video/mp4',
