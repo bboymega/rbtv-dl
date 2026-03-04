@@ -9,7 +9,8 @@ import unicodedata
 import sys
 import json
 import argparse
-
+import os
+import time
 
 def sanitize_video_title(video_title: str) -> str:
     video_title = unicodedata.normalize("NFKD", video_title)
@@ -56,7 +57,7 @@ def download_stream(base_url, output_file=None):
         selected_locale = next((l for l in locales if "en" in l.lower()), locales[0] if locales else None)
         base_endpoint = base_endpoint + selected_locale
     else:
-        sys.stderr.write("ERROR: Unable to fetch locales for {base_url}" + "\033[0m\n")
+        sys.stderr.write(f"\033[31mERROR: Unable to fetch locales for {base_url}\033[0m\n")
         return 1
 
     metadata_url = base_endpoint + "?disableUsageRestrictions=true&filter[uriSlug]=" + url.split('/')[-1] + "&rb3Schema=v1:pageConfig&rb3PageUrl=/" + url
@@ -64,10 +65,7 @@ def download_stream(base_url, output_file=None):
     if response.status_code == 200:
         json_data = response.json()
         video_id = json_data.get('data').get('id')
-        video_thumbnail = json_data.get('data').get('pageMeta').get('og:image')
-        if not video_thumbnail:
-            video_thumbnail = ""
-        if video_id == "" or not video_id:
+        if not video_id:
             sys.stderr.write("\033[31m" + f"ERROR: Unable to fetch video metadata for {base_url}" + "\033[0m\n")
             return 1
     else:
@@ -79,20 +77,27 @@ def download_stream(base_url, output_file=None):
     if response.status_code == 200:
         json_data = response.json()
         video_url = json_data.get('videoUrl')
-        video_title = json_data.get('title')
-        if video_title == "" or not video_title:
-            video_title = 'rbtv-'.join(random.choices(string.ascii_letters, k=8))
+        video_title_raw = json_data.get('title')
+        if not video_title_raw:
+            video_title = 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
         else:
-            video_title = sanitize_video_title(video_title)
+            video_title = sanitize_video_title(video_title_raw)
 
-        if video_url == "" or not video_url:
+        if not video_url:
             sys.stderr.write("\033[31m" + f"ERROR: Unable to fetch streaming url for {base_url}" + "\033[0m\n")
             return 1
     else:
         sys.stderr.write("\033[31m" + f"ERROR: Unable to fetch streaming url for {base_url}" + "\033[0m\n")
         return 1
 
-    headers = (
+    if not output_file:
+        output_file = video_title
+    path = Path(output_file)
+    if path.suffix.lower() != ".mp4":
+        path = path.with_suffix(".mp4")
+    output_file = str(path)
+
+    headers_str = (
         "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36\r\n"
         "Accept: */*\r\n"
@@ -106,78 +111,57 @@ def download_stream(base_url, output_file=None):
         "sec-ch-ua-mobile: ?0\r\n"
         "sec-ch-ua-platform: \"Windows\"\r\n"
     )
+
+    print(f"INFO: M3U stream found at {video_url}")
+    print(f"INFO: Converting and saving to {output_file}")
+
+    temp_ts = str(Path(output_file).with_suffix(".ts"))
+    
     process = (
         ffmpeg
-        .input(video_url, fflags='nobuffer', flags='low_delay', headers=headers)
+        .input(video_url, fflags='nobuffer', flags='low_delay', headers=headers_str)
         .output(
-            'pipe:', 
-            format='mp4',
-            vcodec='copy',
-            acodec='copy',
-            movflags='frag_keyframe+empty_moov+default_base_moof',
+            temp_ts, 
+            format='mpegts',
+            c='copy',
             loglevel='error'
         )
-        .run_async(pipe_stdout=True, pipe_stderr=True)
+        .overwrite_output()
+        .run_async(pipe_stderr=True)
     )
 
-    def generate():
-        try:
-            while True:
-                chunk = process.stdout.read(8192)
-                if not chunk:
-                    break
-                yield chunk
-        except (GeneratorExit, ConnectionResetError):
-            pass
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=0.5)
-                except:
-                    process.kill()
-
-            try:
-                if not process.stderr.closed:
-                    stderr_data = process.stderr.read()
-                    if stderr_data:
-                        sys.stderr.write(f"\n\033[91mFFmpeg Error: {stderr_data.decode(errors='replace')}\033[0m")
-            except (ValueError, OSError):
-                pass
-            finally:
-                process.stdout.close()
-                process.stderr.close()
-
-    print(f"INFO: M3U stream found for {base_url}")
-    received_bytes = 0
     try:
-        print(f"INFO: Converting and saving {video_url}")
-        
-        if not output_file:
-            output_file = video_title
-        elif output_file == "":
-            output_file = video_title
-        
-        path = Path(output_file)
-        if path.suffix.lower() != ".mp4":
-            path = path.with_suffix(".mp4")
-        output_file = str(path)
+        while process.poll() is None:
+            if os.path.exists(temp_ts):
+                received_bytes = os.path.getsize(temp_ts)
+                print(f"\rStatus: Receiving... | Total Size: {received_bytes / 1024 / 1024:.2f} MB", end="", flush=True)
+            time.sleep(0.5)
 
-        with open(output_file, 'wb') as f:
-            for chunk in generate():
-                f.write(chunk)
-                received_bytes += len(chunk)
-                
-                mb_received = received_bytes / (1024 * 1024)
-                
-                print(f"\rStatus: Receiving... | Total Size: {mb_received:.2f} MB", end="", flush=True)
-
-        print(f"\nINFO: Successfully saved {output_file} ({received_bytes / 1024 / 1024 :.2f} MB)")
+        if process.returncode == 0:
+            print(f"\nINFO: Finalizing MP4...")
+            (
+                ffmpeg
+                .input(temp_ts)
+                .output(output_file, **{'c': 'copy', 'bsf:a': 'aac_adtstoasc'}, movflags='faststart', loglevel='error')
+                .overwrite_output()
+                .run()
+            )
+            os.remove(temp_ts)
+            final_size = os.path.getsize(output_file) / (1024 * 1024)
+            print(f"INFO: Successfully saved {output_file} ({final_size:.2f} MB)")
+        else:
+            stderr_data = process.stderr.read().decode(errors='replace')
+            sys.stderr.write(f"\n\033[31mERROR: FFmpeg failed: {stderr_data}\033[0m\n")
 
     except KeyboardInterrupt:
-        print("INFO: Process interrupted by user. File saved up to interruption.")
+        if process.poll() is None:
+            process.terminate()
+        print(f"\nINFO: Interrupted. Partial file saved as {temp_ts} (Playable in VLC).")
     except Exception as e:
-        sys.stderr.write("\n\033[31m" + f"ERROR: File writing failed: {e}" + "\033[0m\n")
+        sys.stderr.write(f"\n\033[31mERROR: File writing failed: {e}\033[0m\n")
+    finally:
+        if hasattr(process, 'stderr') and process.stderr:
+            process.stderr.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RBTV Downloader")
