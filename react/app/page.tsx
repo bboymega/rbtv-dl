@@ -286,7 +286,7 @@ export default function VideoConverter() {
                       <span className="d-flex align-items-center text-secondary">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-muted" />
                         Connection lost. Retrying...
-                        {progression > 0 && <span className="ms-1">(Progress: {progression}%)</span>}
+                        {progression > 0 && <span className="ms-1">({progression}%)</span>}
                       </span>
                     )}
                     {status === 'finalizing' && (
