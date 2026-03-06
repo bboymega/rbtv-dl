@@ -325,6 +325,7 @@ def create_stream():
     task = get_task(video_title)
     if task:
         if task["status"] == "completed" and os.path.exists(task.get("mp4_path", "")):
+            task["completed_at"] = datetime.now().timestamp()
             log_info(f"Task '{video_title}' finished. File verified at: {task.get('mp4_path')}", request.remote_addr)
             return jsonify({"status": task["status"], "title": video_title, "stream": video_url, "thumbnail": video_thumbnail}), 200
         if task["status"] in ["converting", "finalizing"] and is_pid_alive(task.get("pid")):
@@ -424,6 +425,7 @@ def download_video():
     task = get_task(video_title)
     
     if task and task["status"] == "completed" and os.path.exists(task["mp4_path"]):
+        task["completed_at"] = datetime.now().timestamp()
         log_info(f"Download started for {video_title}", request.remote_addr)
         return send_file(task["mp4_path"], as_attachment=True, download_name=f"{video_title}.mp4", mimetype='video/mp4')
 
