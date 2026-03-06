@@ -285,7 +285,7 @@ export default function VideoConverter() {
                     {status === 'reconnecting' && (
                       <span className="d-flex align-items-center text-secondary">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-muted" />
-                        Reconnecting... {progression} %
+                        Reconnecting...
                       </span>
                     )}
                     {status === 'finalizing' && (
