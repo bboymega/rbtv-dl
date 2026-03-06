@@ -8,7 +8,7 @@ Run the container:
 ```
 docker run --rm -d -p 8080:8080 bboymega/rbtv-dl:2.1
 ```
-and open http://127.0.0.1:8080 in your browser. You should be able to access the WebUI locally.
+and open http://127.0.0.1:8080 (or http://[server-ip]:8080) in your browser. You should be able to access the WebUI locally.
 
 # CLI Usage: 
 ```
