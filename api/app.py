@@ -167,18 +167,20 @@ def get_title_from_url(base_url, remote_addr):
     url = path.lstrip('/')
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
+        "Accept": "application/json, text/plain, */*",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "sec-ch-ua": '"Chromium";v="144", "Not(A:Brand";v="24", "Google Chrome";v="144"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
         "Upgrade-Insecure-Requests": "1",
-        "Referer": base_url
+        "Referer": base_url,
+        "Origin": "https://www.redbull.com"
     })
     try:
         loc_res = session.get("https://www.redbull.com/v3/config/pages?url=" + url, timeout=10)
@@ -367,7 +369,7 @@ def create_stream():
         "Accept: */*\r\n"
         "Accept-Language: en-US,en;q=0.9\r\n"
         "Origin: https://www.redbull.com\r\n"
-        "Referer: https://www.redbull.com/\r\n"
+        f"Referer: {base_url}\r\n"
         "Sec-Fetch-Dest: empty\r\n"
         "Sec-Fetch-Mode: cors\r\n"
         "Sec-Fetch-Site: same-site\r\n"
@@ -377,12 +379,10 @@ def create_stream():
     )
     yt_headers = {line.split(": ", 1)[0]: line.split(": ", 1)[1].strip() for line in headers_str.strip().split("\r\n") if ": " in line}
     download_connections = int(os.getenv('DOWNLOAD_CONNECTIONS', 8))
+
     cmd = [
         'yt-dlp',
         video_url,
-        '--add-header', f"User-Agent:{yt_headers.get('User-Agent')}",
-        '--add-header', f"Referer:{yt_headers.get('Referer')}",
-        '--add-header', f"Origin:{yt_headers.get('Origin')}",
         '--external-downloader', 'aria2c',
         '--downloader-args', f"aria2c:-x {download_connections} -s {download_connections} -k 1M --summary-interval=1",
         '-o', mp4_path,
@@ -390,6 +390,8 @@ def create_stream():
         '--newline',
         '--progress',
     ]
+    for key, value in yt_headers.items():
+        cmd.extend(['--add-header', f"{key}:{value}"])
 
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
 
