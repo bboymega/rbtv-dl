@@ -82,7 +82,7 @@ export default function VideoConverter() {
       } catch (err) {
         console.warn("Polling error (possible background/network issue):", err);
         setStatus("reconnecting"); 
-        pollInterval.current = setTimeout(poll, 5000); 
+        pollInterval.current = setTimeout(poll, 2500); 
       }
     };
 
