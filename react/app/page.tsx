@@ -80,14 +80,9 @@ export default function VideoConverter() {
         pollInterval.current = setTimeout(poll, 2000);
 
       } catch (err) {
-        console.error("Polling error:", err);
-        setError("Connection lost or invalid response.");
-        setIsProcessing(false);
-        setStatus("loading");
-        setThumbnailUrl("");
-        setProgression(0);
-        setFileSize(0);
-        if (pollInterval.current) clearTimeout(pollInterval.current as NodeJS.Timeout);
+        console.warn("Polling error (possible background/network issue):", err);
+        setStatus("reconnecting"); 
+        pollInterval.current = setTimeout(poll, 5000); 
       }
     };
 
@@ -285,6 +280,13 @@ export default function VideoConverter() {
                       <span className="d-flex align-items-center">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-primary" />
                         Converting: {progression} %
+                      </span>
+                    )}
+                    {status === 'reconnecting' && (
+                      <span className="d-flex align-items-center text-secondary">
+                        <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-muted" />
+                        Connection lost. Retrying...
+                        {progression > 0 && <span className="ms-1">(Progress: {progression}%)</span>}
                       </span>
                     )}
                     {status === 'finalizing' && (
