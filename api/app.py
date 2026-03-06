@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_file
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
+import hashlib
 
 load_dotenv()
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -33,6 +34,8 @@ def create_app():
 app = create_app()
 active_processes = {}
 
+def get_url_hash(url):
+    return hashlib.md5(url.encode()).hexdigest()
 
 def log_error(message, remote_addr="RBTV-DL"):
     timestamp = datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')
@@ -315,8 +318,26 @@ def create_stream():
     if not base_url:
         return jsonify({"status": "error", "message": "Missing url"}), 400
 
-    log_info(f"Fetching metadata for {base_url}", request.remote_addr)
-    video_title, video_url, video_thumbnail = get_title_from_url(base_url, request.remote_addr)
+    url_hash = get_url_hash(base_url)
+    cached_data = r.get(f"url_map:{url_hash}")
+    
+    if cached_data:
+        metadata = json.loads(cached_data)
+        video_title = metadata['title']
+        video_url = metadata['url']
+        video_thumbnail = metadata['thumbnail']
+        log_info(f"Metadata Cache Hit for {video_title}", request.remote_addr)
+    else:
+        log_info(f"Fetching metadata for {base_url}", request.remote_addr)
+        video_title, video_url, video_thumbnail = get_title_from_url(base_url, request.remote_addr)
+        if video_title:
+            metadata = {
+                "title": video_title,
+                "url": video_url,
+                "thumbnail": video_thumbnail
+            }
+            r.set(f"url_map:{url_hash}", json.dumps(metadata))
+
     log_info(f"M3U Stream found for {base_url}, Title={video_title}, Stream={video_url}, Thumbnail={video_thumbnail}", request.remote_addr)
     
     if not video_title or not video_url:
@@ -326,6 +347,7 @@ def create_stream():
     if task:
         if task["status"] == "completed" and os.path.exists(task.get("mp4_path", "")):
             task["completed_at"] = datetime.now().timestamp()
+            set_task(video_title, task)
             log_info(f"Task '{video_title}' finished. File verified at: {task.get('mp4_path')}", request.remote_addr)
             return jsonify({"status": task["status"], "title": video_title, "stream": video_url, "thumbnail": video_thumbnail}), 200
         if task["status"] in ["converting", "finalizing"] and is_pid_alive(task.get("pid")):
@@ -392,7 +414,23 @@ def get_status():
     if not base_url:
         return jsonify({"status": "error", "message": "Missing url"}), 400
 
-    video_title, video_url, video_thumbnail = get_title_from_url(base_url, request.remote_addr)
+    url_hash = get_url_hash(base_url)
+    cached_data = r.get(f"url_map:{url_hash}")
+
+    video_title, video_url, video_thumbnail = None, None, None
+
+    if cached_data:
+        metadata = json.loads(cached_data)
+        video_title = metadata.get('title')
+        video_url = metadata.get('url')
+        video_thumbnail = metadata.get('thumbnail')
+    else:
+        video_title, video_url, video_thumbnail = get_title_from_url(base_url, request.remote_addr)
+        if video_title:
+            r.set(f"url_map:{url_hash}", json.dumps({
+                "title": video_title, "url": video_url, "thumbnail": video_thumbnail
+            }))
+
     task = get_task(video_title)
     
     if not task:
@@ -421,11 +459,28 @@ def get_status():
 @app.route('/api/download', methods=['GET'])
 def download_video():
     base_url = request.args.get('url')
-    video_title, _, _ = get_title_from_url(base_url, request.remote_addr)
+    if not base_url:
+        return jsonify({"status": "error", "message": "Missing url"}), 400
+    
+    url_hash = get_url_hash(base_url)
+    cached_data = r.get(f"url_map:{url_hash}")
+    
+    video_title = None
+
+    if cached_data:
+        metadata = json.loads(cached_data)
+        video_title = metadata.get('title')
+    else:
+        video_title, _, _ = get_title_from_url(base_url, request.remote_addr)
+    
+    if not video_title:
+        return jsonify({"status": "error", "message": "Could not resolve video title"}), 500
+
     task = get_task(video_title)
     
     if task and task["status"] == "completed" and os.path.exists(task["mp4_path"]):
         task["completed_at"] = datetime.now().timestamp()
+        set_task(video_title, task)
         log_info(f"Download started for {video_title}", request.remote_addr)
         return send_file(task["mp4_path"], as_attachment=True, download_name=f"{video_title}.mp4", mimetype='video/mp4')
 
