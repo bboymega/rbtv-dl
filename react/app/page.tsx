@@ -171,6 +171,8 @@ export default function VideoConverter() {
                   onChange={(e) => setUrl(e.target.value)}
                   disabled={isProcessing}
                   required
+                  autoFocus
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
                   style={{ height: '48px' }}
                 />
                 <button
