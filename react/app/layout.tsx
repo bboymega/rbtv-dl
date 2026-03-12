@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -12,9 +12,13 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const viewport: Viewport = {
+  themeColor: "#f8f9fa",
+};
+
 export const metadata: Metadata = {
-  title: "RBTV Converter",
-  description: "RBTV Converter",
+  title: "RBTV-DL",
+  description: "RBTV-DL",
 };
 
 export default function RootLayout({
