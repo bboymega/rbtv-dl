@@ -19,7 +19,6 @@ from flask import Flask, request, jsonify, send_file
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 import xxhash
-from flask_cors import CORS
 
 load_dotenv()
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -34,9 +33,6 @@ def create_app():
     return app
 
 app = create_app()
-CORS(app)
-active_processes = {}
-
 
 def log_error(message, remote_addr="RBTV-DL"):
     timestamp = datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')
@@ -478,8 +474,6 @@ def create_stream():
         "percent": 0,
         "pid": process.pid
     })
-
-    active_processes[video_title] = process
 
     threading.Thread(target=monitor_progress, args=(process, video_id, mp4_path, request.remote_addr), daemon=True).start()
 
