@@ -1,14 +1,14 @@
 # Red Bull TV Downloader
 Red Bull TV Downloader available as both a CLI tool and a Web UI. Built with React/Next.js and Python-Flask
 
-![RBTV-DL](screenshot-rbtv-dl.png)
+![RBTV-DL](screenshot-rbtv-dl-3_0.jpeg)
 
 # Quick Start: Web UI (Docker):
 Run the container:
 ```
 docker run --rm -d -p 8080:8080 bboymega/rbtv-dl:3.0
 ```
-and open http://127.0.0.1:8080 (or http://[server-ip]:8080) in your browser. You should be able to access the WebUI locally.
+and open `http://127.0.0.1:8080` (or `http://[server-ip]:8080`) in your browser. You should be able to access the WebUI locally.
 
 # CLI Usage: 
 ```
