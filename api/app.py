@@ -178,7 +178,7 @@ def follow_redirect(base_url, remote_addr):
 
     r = session.head(base_url, allow_redirects=True)
     if r.url != base_url:
-        log_info(f"Redirected to [{r.url}]")
+        log_info(f"Redirected to [{r.url}]", remote_addr)
         return r.url
     return base_url
 
