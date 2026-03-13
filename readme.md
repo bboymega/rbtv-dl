@@ -38,6 +38,9 @@ pip3 install -r requirements.txt
 
 # Changlog
 ```
+## 2026-03-11
+- Updated compatibility for Red Bull TV API v5.1
+
 ## 2026-03-10
 - Fixed a bug where yt-dlp was required but not installed when building the image.
 

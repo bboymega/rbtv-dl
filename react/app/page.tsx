@@ -25,6 +25,7 @@ export default function VideoConverter() {
   const [streamUrl, setStreamUrl] = useState('');
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [progression, setProgression] = useState(0);
+  const [subheading, setSubheading] = useState<null | string>(null);
 
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") || "";
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
@@ -99,10 +100,15 @@ export default function VideoConverter() {
     if (!url) return;
     setIsProcessing(true);
     setVideoTitle(null);
+    setSubheading(null);
 
     try {
-      const response = await fetch(`${siteUrl}/api/create?url=${encodeURIComponent(url)}`, {
+      const response = await fetch(`${siteUrl}/api/create`, {
         method: 'POST',
+        body: JSON.stringify({ url: url }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
       const data = await response.json();
 
@@ -111,6 +117,7 @@ export default function VideoConverter() {
       }
 
       setVideoTitle(data.title);
+      setSubheading(data.subheading);
       setStreamUrl(data.stream);
       setThumbnailUrl(data.thumbnail);
       startPolling(url);
@@ -271,34 +278,59 @@ export default function VideoConverter() {
                   {/* Status Indicator */}
                   <div className="small text-muted mb-2" style={{ minHeight: '24px' }}>
                     {status === 'loading' && (
+                      <>
+                      <span className="d-block mb-1">
+                        Loading...
+                      </span>
                       <span className="d-flex align-items-center">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-primary" />
                         Initializing...
                       </span>
+                      </>
                     )}
                     {status === 'converting' && (
+                      <>
+                      <span className="d-block mb-1">
+                        {subheading ? subheading : videoTitle}
+                      </span>
                       <span className="d-flex align-items-center">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-primary" />
                         Converting: {progression} %
                       </span>
+                      </>
                     )}
                     {status === 'reconnecting' && (
+                      <>
+                      <span className="d-block mb-1">
+                        {subheading ? subheading : videoTitle}
+                      </span>
                       <span className="d-flex align-items-center text-secondary">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2 text-muted" />
                         Reconnecting...
                       </span>
+                      </>
                     )}
                     {status === 'finalizing' && (
+                      <>
+                      <span className="d-block mb-1">
+                        {subheading ? subheading : videoTitle}
+                      </span>
                       <span className="d-flex align-items-center text-warning">
                         <FontAwesomeIcon icon={faCircleNotch} spin className="me-2" />
                         Finalizing {statusMsg && `(${statusMsg})`}
                       </span>
+                      </>
                     )}
                     {status === 'completed' && (
+                      <>
+                      <span className="d-block mb-1">
+                        {subheading ? subheading : videoTitle}
+                      </span>
                       <span className="text-success">
                         <FontAwesomeIcon icon={faCheck} className="me-2" />
                         Ready ({formatSize(fileSize)})
                       </span>
+                      </>
                     )}
                   </div>
 

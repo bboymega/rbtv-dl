@@ -14,11 +14,12 @@ import psutil
 import time
 import subprocess
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
-import hashlib
+import xxhash
+from flask_cors import CORS
 
 load_dotenv()
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -33,10 +34,9 @@ def create_app():
     return app
 
 app = create_app()
+CORS(app)
 active_processes = {}
 
-def get_url_hash(url):
-    return hashlib.md5(url.encode()).hexdigest()
 
 def log_error(message, remote_addr="RBTV-DL"):
     timestamp = datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')
@@ -46,13 +46,12 @@ def log_info(message, remote_addr="RBTV-DL"):
     timestamp = datetime.now().strftime('[%d/%b/%Y %H:%M:%S]')
     print(f"{timestamp} {remote_addr} \"INFO: {message}\"", flush=True)
 
-def set_task(title, data):
-    r.set(f"task:{title}", json.dumps(data), ex=retention_period)
+def set_task(video_id, data):
+    r.set(f"task:{video_id}", json.dumps(data), ex=retention_period)
 
-def get_task(title):
-    data = r.get(f"task:{title}")
+def get_task(video_id):
+    data = r.get(f"task:{video_id}")
     return json.loads(data) if data else None
-
 
 def is_pid_alive(pid):
     if pid is None:
@@ -162,17 +161,7 @@ def sanitize_video_title(video_title: str) -> str:
     video_title = re.sub(r'_+', '_', video_title).strip("._")
     return video_title[:150]
 
-def get_title_from_url(base_url, remote_addr):
-    path = urlparse(base_url).path
-    url = path.lstrip('/')
-    category_raw = path.rstrip('/').split('/')[-2]
-    category_map = {
-        "live": "live-videos",
-        "episodes": "episode-videos",
-        "films": "films",
-        "videos": "videos"
-    }
-    category = category_map.get(category_raw, category_raw)
+def follow_redirect(base_url, remote_addr):
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
@@ -190,6 +179,77 @@ def get_title_from_url(base_url, remote_addr):
         "Referer": base_url,
         "Origin": "https://www.redbull.com"
     })
+
+    r = session.head(base_url, allow_redirects=True)
+    if r.url != base_url:
+        log_info(f"Redirected to [{r.url}]")
+        return r.url
+    return base_url
+
+def get_title_from_url(base_url_init, remote_addr):
+    base_url = follow_redirect(base_url_init, remote_addr)
+    path = urlparse(base_url).path
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Accept": "application/json, text/plain, */*",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "sec-ch-ua": '"Chromium";v="144", "Not(A:Brand";v="24", "Google Chrome";v="144"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Upgrade-Insecure-Requests": "1",
+        "Referer": base_url,
+        "Origin": "https://www.redbull.com"
+    })
+
+    segments = [s for s in path.split('/') if s]
+    video_id = next((s for s in segments if re.search(r'rrn:content', s)), None)
+
+    # V5.1 API Fix:
+    # If the URL path already contains an `rrn:content` identifier, we can skip
+    # the usual lookup logic and directly query the Red Bull TV player API
+    # using that content ID to retrieve the video metadata.
+    if video_id:
+        try:
+            tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/int/{video_id}"
+            json_data = session.get(tv_api, timeout=10).json()
+            stream_id = json_data.get('links')[0].get('id')
+            video_url_api = f"https://api-player.redbull.com/tv?videoId={stream_id}&locale=en&tenant=rbtv"
+            json_data = session.get(video_url_api, timeout=10).json()
+            video_url = json_data.get('videoUrl')
+            video_thumbnail = json_data.get('videoDetails').get('image')
+            video_title_raw = json_data.get('title')
+            subheading = None
+            try:
+                meta_url_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/int/{stream_id}"
+                meta_json = session.get(meta_url_api, timeout=10).json()
+                subheading_raw = meta_json.get('subheading')
+                subheading = sanitize_video_title(subheading_raw) if subheading_raw else None
+            except Exception:
+                pass
+            title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
+            return title, video_url, video_thumbnail, video_id, subheading
+        except Exception as e:
+            log_error(f"V5.1 API lookup failed for [{video_id}], falling back to legacy API", remote_addr)
+    else:
+        log_info(f"Falling back to legacy API for [{base_url}]", remote_addr)
+    
+    url = path.lstrip('/')
+    category_raw = path.rstrip('/').split('/')[-2]
+    category_map = {
+        "live": "live-videos",
+        "episodes": "episode-videos",
+        "films": "films",
+        "videos": "videos"
+    }
+    category = category_map.get(category_raw, category_raw)
+
     try:
         loc_res = session.get("https://www.redbull.com/v3/config/pages?url=" + url, timeout=10)
         locales = loc_res.json().get("data", {}).get("domainConfig", {}).get("supportedLocales", [])
@@ -203,10 +263,10 @@ def get_title_from_url(base_url, remote_addr):
         video_url = json_data.get('videoUrl')
         video_title_raw = json_data.get('title')
         title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
-        return title, video_url, video_thumbnail
+        return title, video_url, video_thumbnail, video_id.rsplit(':', 1)[0], None
     except Exception as e:
         log_error(f"Unable to fetch metadata, {e}", remote_addr)
-        return None, None, None
+        return None, None, None, None, None
 
 def get_video_duration(url, headers):
     try:
@@ -215,7 +275,7 @@ def get_video_duration(url, headers):
     except:
         return None
 
-def monitor_progress(process, video_title, final_output_path, remote_addr):
+def monitor_progress(process, video_id, final_output_path, remote_addr):
     total_frag_regex = re.compile(r"Total fragments:\s+(\d+)")
     prefix_regex = re.compile(r"Destination: .*/(tmp[^.]+)")
     
@@ -264,17 +324,17 @@ def monitor_progress(process, video_title, final_output_path, remote_addr):
                 else:
                     total_percent = 90 + (ratio * 9)
 
-                task = get_task(video_title)
+                task = get_task(video_id)
                 if task:
                     if total_percent >= 99.9:
                         task["status"] = "finalizing"
                         task["message"] = "consolidating"
                         task["percent"] = 99.9
-                        set_task(video_title, task)
+                        set_task(video_id, task)
                     elif total_percent > task.get("percent", 0):
                         task["status"] = "converting"
                         task["percent"] = total_percent
-                        set_task(video_title, task)
+                        set_task(video_id, task)
 
             except Exception:
                 pass
@@ -282,18 +342,18 @@ def monitor_progress(process, video_title, final_output_path, remote_addr):
         if "[Merger]" in line or "Merging formats" in line:
             if not merging_started:
                 merging_started = True
-                task = get_task(video_title)
+                task = get_task(video_id)
                 if task:
                     task["status"] = "finalizing"
                     task["message"] = "merging tracks"
                     task["percent"] = 99.9
-                    set_task(video_title, task)
-                log_info(f"Merging tracks for '{video_title}'", remote_addr)
+                    set_task(video_id, task)
+                log_info(f"Merging tracks for [{video_id}]", remote_addr)
 
     return_code = process.wait()
     process.stdout.close()
 
-    task = get_task(video_title)
+    task = get_task(video_id)
     if not task:
         return
 
@@ -303,16 +363,16 @@ def monitor_progress(process, video_title, final_output_path, remote_addr):
         task["completed_at"] = datetime.now().timestamp()
         task["mp4_path"] = final_output_path
         task["pid"] = None
-        log_info(f"Task '{video_title}' is completed", remote_addr)
+        log_info(f"Task [{video_id}] is completed", remote_addr)
     else:
         task["status"] = "failed"
         task["pid"] = None
         if return_code in [-2, -15, 130]:
-            log_error(f"Task '{video_title}' was interrupted", remote_addr)
+            log_error(f"Task [{video_id}] was interrupted", remote_addr)
         else:
-            log_error(f"Task '{video_title}' failed (Code: {return_code})", remote_addr)
+            log_error(f"Task [{video_id}] failed (Code: {return_code})", remote_addr)
 
-    set_task(video_title, task)
+    set_task(video_id, task)
 
 def run_purge_scheduler():
     while True:
@@ -324,49 +384,56 @@ threading.Thread(target=run_purge_scheduler, daemon=True).start()
 
 @app.route('/api/create', methods=['POST'])
 def create_stream():
-    base_url = request.args.get('url')
+    base_url = unquote(request.json.get('url'))
     if not base_url:
         return jsonify({"status": "error", "message": "Missing url"}), 400
 
-    url_hash = get_url_hash(base_url)
+    parsed = urlparse(base_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    base_url = base_url.rstrip('/')
+    url_hash = xxhash.xxh64(base_url).hexdigest()
     cached_data = r.get(f"url_map:{url_hash}")
     
     if cached_data:
         metadata = json.loads(cached_data)
-        video_title = metadata['title']
-        video_url = metadata['url']
-        video_thumbnail = metadata['thumbnail']
-        log_info(f"Metadata Cache Hit for {video_title}", request.remote_addr)
+        video_title = metadata.get('title')
+        video_url = metadata.get('url')
+        video_thumbnail = metadata.get('thumbnail')
+        video_id = metadata.get('video_id')
+        video_subheading = metadata.get('subheading')
+        log_info(f"Metadata Cache Hit for [{video_id}]", request.remote_addr)
     else:
-        log_info(f"Fetching metadata for {base_url}", request.remote_addr)
-        video_title, video_url, video_thumbnail = get_title_from_url(base_url, request.remote_addr)
+        log_info(f"Fetching metadata for [{base_url}]", request.remote_addr)
+        video_title, video_url, video_thumbnail, video_id, video_subheading = get_title_from_url(base_url, request.remote_addr)
         if video_title:
             metadata = {
                 "title": video_title,
+                "video_id": video_id,
                 "url": video_url,
-                "thumbnail": video_thumbnail
+                "thumbnail": video_thumbnail,
+                "subheading": video_subheading
             }
             r.set(f"url_map:{url_hash}", json.dumps(metadata), ex=86400)
 
-    log_info(f"M3U Stream found for {base_url}, Title={video_title}, Stream={video_url}, Thumbnail={video_thumbnail}", request.remote_addr)
+    log_info(f"M3U Stream found for [{base_url}], Video_ID=[{video_id}] Title=[{video_title}], Subheading=[{video_subheading}] Stream=[{video_url}], Thumbnail=[{video_thumbnail}]", request.remote_addr)
     
     if not video_title or not video_url:
         return jsonify({"status": "error", "message": "Could not fetch video data"}), 500
 
-    task = get_task(video_title)
+    task = get_task(video_id)
     if task:
         if task["status"] == "completed" and os.path.exists(task.get("mp4_path", "")):
             task["completed_at"] = datetime.now().timestamp()
-            set_task(video_title, task)
-            log_info(f"Task '{video_title}' finished. File verified at: {task.get('mp4_path')}", request.remote_addr)
-            return jsonify({"status": task["status"], "title": video_title, "stream": video_url, "thumbnail": video_thumbnail}), 200
+            set_task(video_id, task)
+            log_info(f"Task [{video_id}] finished. File verified at: [{task.get('mp4_path')}]", request.remote_addr)
+            return jsonify({"status": task["status"], "title": video_title, "subheading": video_subheading, "stream": video_url, "thumbnail": video_thumbnail}), 200
         if task["status"] in ["converting", "finalizing"] and is_pid_alive(task.get("pid")):
-            log_info(f"Task '{video_title}' is {task['status']} (PID: {task.get('pid')})", request.remote_addr)
-            return jsonify({"status": task["status"], "title": video_title, "stream": video_url, "thumbnail": video_thumbnail}), 200
+            log_info(f"Task [{video_id}] is {task['status']} (PID: {task.get('pid')})", request.remote_addr)
+            return jsonify({"status": task["status"], "title": video_title, "subheading": video_subheading, "stream": video_url, "thumbnail": video_thumbnail}), 200
 
     target_dir = os.path.join(tempfile.gettempdir(), "rbtv-dl")
     os.makedirs(target_dir, exist_ok=True)
-    log_info(f"Conversion started for {video_title}", request.remote_addr)
+    log_info(f"Conversion started for [{video_id}]", request.remote_addr)
 
     tmp_mp4 = tempfile.NamedTemporaryFile(delete=True, suffix='.mp4', dir=target_dir)
     mp4_path = tmp_mp4.name
@@ -402,8 +469,8 @@ def create_stream():
         cmd.extend(['--add-header', f"{key}:{value}"])
 
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-
-    set_task(video_title, {
+    
+    set_task(video_id, {
         "title": video_title,
         "status": "converting",
         "mp4_path": mp4_path,
@@ -414,34 +481,39 @@ def create_stream():
 
     active_processes[video_title] = process
 
-    threading.Thread(target=monitor_progress, args=(process, video_title, mp4_path, request.remote_addr), daemon=True).start()
+    threading.Thread(target=monitor_progress, args=(process, video_id, mp4_path, request.remote_addr), daemon=True).start()
 
-    return jsonify({"status": "created", "title": video_title, "stream": video_url, "thumbnail": video_thumbnail}), 201
+    return jsonify({"status": "created", "title": video_title, "subheading": video_subheading, "stream": video_url, "thumbnail": video_thumbnail}), 201
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
     base_url = request.args.get('url')
     if not base_url:
         return jsonify({"status": "error", "message": "Missing url"}), 400
-
-    url_hash = get_url_hash(base_url)
+    
+    parsed = urlparse(base_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    base_url = base_url.rstrip('/')
+    url_hash = xxhash.xxh64(base_url).hexdigest()
     cached_data = r.get(f"url_map:{url_hash}")
 
-    video_title, video_url, video_thumbnail = None, None, None
+    video_title, video_url, video_thumbnail, video_id = None, None, None, None
 
     if cached_data:
         metadata = json.loads(cached_data)
         video_title = metadata.get('title')
         video_url = metadata.get('url')
         video_thumbnail = metadata.get('thumbnail')
+        video_id = metadata.get('video_id')
+        video_subheading = metadata.get('subheading')
     else:
-        video_title, video_url, video_thumbnail = get_title_from_url(base_url, request.remote_addr)
+        video_title, video_url, video_thumbnail, video_id, video_subheading = get_title_from_url(base_url, request.remote_addr)
         if video_title:
             r.set(f"url_map:{url_hash}", json.dumps({
-                "title": video_title, "url": video_url, "thumbnail": video_thumbnail
+                "title": video_title, "video_id": video_id, "subheading": video_subheading, "url": video_url, "thumbnail": video_thumbnail
             }), ex=86400)
 
-    task = get_task(video_title)
+    task = get_task(video_id)
     
     if not task:
         return jsonify({"status": "inactive", "title": video_title or "unknown"}), 200
@@ -450,6 +522,7 @@ def get_status():
 
     response_data = {
         "title": video_title,
+        "subheading": video_subheading,
         "status": task["status"],
         "progression": round(float(task.get("percent", 0)), 1),
         "stream": video_url,
@@ -472,29 +545,40 @@ def download_video():
     if not base_url:
         return jsonify({"status": "error", "message": "Missing url"}), 400
     
-    url_hash = get_url_hash(base_url)
+    parsed = urlparse(base_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    base_url = base_url.rstrip('/')
+    url_hash = xxhash.xxh64(base_url).hexdigest()
     cached_data = r.get(f"url_map:{url_hash}")
     
     video_title = None
+    video_subheading = None
+    video_id = None
 
     if cached_data:
         metadata = json.loads(cached_data)
         video_title = metadata.get('title')
+        video_id = metadata.get('video_id')
+        video_subheading = metadata.get('subheading')
     else:
-        video_title, _, _ = get_title_from_url(base_url, request.remote_addr)
+        video_title, _, _, video_id, video_subheading = get_title_from_url(base_url, request.remote_addr)
     
     if not video_title:
         return jsonify({"status": "error", "message": "Could not resolve video title"}), 500
 
-    task = get_task(video_title)
+    task = get_task(video_id)
     
     if task and task["status"] == "completed" and os.path.exists(task["mp4_path"]):
         task["completed_at"] = datetime.now().timestamp()
-        set_task(video_title, task)
-        log_info(f"Download started for {video_title}", request.remote_addr)
-        return send_file(task["mp4_path"], as_attachment=True, download_name=f"{video_title}.mp4", mimetype='video/mp4')
+        set_task(video_id, task)
+        log_info(f"Download started for [{video_id}]", request.remote_addr)
+        if video_subheading:
+            download_filename = video_title + " - " + video_subheading
+        else:
+            download_filename = video_title
+        return send_file(task["mp4_path"], as_attachment=True, download_name=f"{download_filename}.mp4", mimetype='video/mp4')
 
-    log_error(f"File not found for {video_title}", request.remote_addr)
+    log_error(f"File not found for [{video_id}]", request.remote_addr)
     return jsonify({"status": "error", "message": "File not found"}), 404
 
 @app.errorhandler(400)
