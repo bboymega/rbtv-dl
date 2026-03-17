@@ -6,7 +6,7 @@ Red Bull TV Downloader available as both a CLI tool and a Web UI. Built with Rea
 # Quick Start: Web UI (Docker):
 Run the container:
 ```
-docker run --rm -d -p 8080:8080 bboymega/rbtv-dl:3.0
+docker run --rm -d -p 8080:8080 bboymega/rbtv-dl:4.0
 ```
 and open `http://127.0.0.1:8080` (or `http://[server-ip]:8080`) in your browser. You should be able to access the WebUI locally.
 
@@ -38,6 +38,9 @@ pip3 install -r requirements.txt
 
 # Changlog
 ```
+## 2026-03-17
+- Added regional auto-detection.
+
 ## 2026-03-11
 - Updated compatibility for Red Bull TV API v5.1
 

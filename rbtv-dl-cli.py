@@ -11,14 +11,13 @@ import json
 import argparse
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def sanitize_video_title(video_title: str) -> str:
-    video_title = unicodedata.normalize("NFKD", video_title)
-    video_title = video_title.replace("–", "-")
-    video_title = video_title.encode("ascii", "ignore").decode("ascii")
-    video_title = re.sub(r'[^A-Za-z0-9._\- ]', '_', video_title)
+    video_title = unicodedata.normalize("NFC", video_title)
+    video_title = re.sub(r'[\\/*?:"<>|]', '_', video_title)
     video_title = re.sub(r'_+', '_', video_title)
-    video_title = video_title.strip("._")
+    video_title = video_title.strip(". ")
     return video_title[:150]
 
 def format_size(num_bytes):
@@ -70,14 +69,70 @@ def download_stream(base_url_init, output_file=None):
     if video_id:
         tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/int/{video_id}"
         json_data = session.get(tv_api, timeout=10).json()
-        stream_id = json_data.get('links')[0].get('id')
+        stream_id = (json_data.get('links') or [{}])[0].get('id')
+        locale = "int"
+
+        def scan_single_locale(locale, video_id):
+            tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/{locale}/{video_id}"
+            try:
+                response = requests.get(tv_api, timeout=5) 
+                if response.ok:
+                    json_data = response.json()
+                    links = json_data.get('links')
+                    if links and len(links) > 0:
+                        s_id = links[0].get('id')
+                        if s_id:
+                            return {"locale": locale, "stream_id": s_id}
+            except Exception:
+                pass
+            return None
+        
+        # If INT is not available detect regional versions.
+        if not stream_id:
+            locale_list = [
+                'us', 'br', 'jp', 'de', 'gb', 'fr', 'kr', 'it', 'ca', 'es', 
+                'pl', 'au', 'nl', 'se', 'be', 'ch', 'at', 'hk', 'sg', 'dk', 
+                'fi', 'no', 'ie', 'nz', 'pt', 'il', 'gr', 'cz', 'ro', 'hu', 
+                'in', 'id', 'mx', 'ng', 'ph', 'vn', 'pk', 'eg', 'za', 'co', 
+                'th', 'my', 'ar', 'sa', 'iq', 'ma', 'pe', 'gh', 'uz', 'kz', 
+                'dz', 'bd', 'ke', 'et', 'mm', 'lk', 'ua', 'cl', 've', 'ps',
+                'ad', 'ae', 'ag', 'ai', 'al', 'am', 'ao', 'aq', 'as', 'aw', 
+                'ax', 'ba', 'bb', 'bf', 'bg', 'bh', 'bi', 'bj', 'bl', 'bm', 
+                'bn', 'bo', 'bq', 'bs', 'bt', 'bv', 'bw', 'bz', 'cc', 'cd', 
+                'cg', 'ci', 'ck', 'cm', 'cr', 'cv', 'cw', 'cx', 'cy', 'dj', 
+                'dm', 'do', 'ec', 'ee', 'fk', 'fm', 'fo', 'ga', 'gd', 'gf', 
+                'gg', 'gi', 'gl', 'gm', 'gn', 'gp', 'gs', 'gt', 'gu', 'gw', 
+                'gy', 'hm', 'hn', 'ht', 'im', 'io', 'is', 'je', 'jm', 'jo', 
+                'ki', 'km', 'kn', 'kw', 'ky', 'lb', 'lc', 'li', 'lr', 'ls', 
+                'lt', 'lu', 'lv', 'ly', 'mc', 'md', 'me', 'mf', 'mg', 'mh', 
+                'mk', 'ml', 'mn', 'mo', 'mp', 'mq', 'mr', 'ms', 'mt', 'mu', 
+                'mv', 'mw', 'mz', 'na', 'nc', 'ne', 'nf', 'ni', 'np', 'nr', 
+                'nu', 'om', 'pa', 'pf', 'pg', 'pm', 'pn', 'pr', 'pw', 'py', 
+                're', 'rw', 'sb', 'sc', 'sh', 'si', 'sj', 'sk', 'sl', 'sm', 
+                'sn', 'so', 'sr', 'ss', 'st', 'sv', 'sx', 'sz', 'tc', 'tf', 
+                'tg', 'tk', 'tl', 'tn', 'to', 'tt', 'tv', 'tz', 'ug', 'um', 
+                'uy', 'va', 'vc', 'vg', 'vi', 'vu', 'wf', 'ws', 'ye', 'yt', 
+                'zm', 'zw', 'cn', 'ru', 'ir', 'tr', 'by', 'kp', 'sy', 'cu',
+                'er', 'tm', 'qa', 'af', 'sd', 'la', 'az', 'tj', 'gq', 'cf',
+                'td'
+            ]
+            with ThreadPoolExecutor(max_workers=16) as executor:
+                future_to_locale = {executor.submit(scan_single_locale, l, video_id): l for l in locale_list}
+                for future in as_completed(future_to_locale):
+                    result = future.result()
+                    if result:
+                        stream_id = result['stream_id']
+                        locale = result['locale']
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+
         video_url_api = f"https://api-player.redbull.com/tv?videoId={stream_id}&locale=en&tenant=rbtv"
         json_data = session.get(video_url_api, timeout=10).json()
         video_url = json_data.get('videoUrl')
         video_title_raw = json_data.get('title')
         subheading = None
         try:
-            meta_url_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/int/{stream_id}"
+            meta_url_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
             meta_json = session.get(meta_url_api, timeout=10).json()
             subheading_raw = meta_json.get('subheading')
             subheading = sanitize_video_title(subheading_raw) if subheading_raw else None
