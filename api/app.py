@@ -20,13 +20,43 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 import xxhash
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
 
 load_dotenv()
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_db = int(os.getenv('REDIS_DB', 0))
 retention_period = int(os.getenv('RETENTION_PERIOD', 21600))
+source_addr = os.getenv('SOURCE_ADDRESS')
 r = redis.Redis(host=redis_host, port=redis_port, db=redis_db, decode_responses=True)
+
+class SourceAddressAdapter(HTTPAdapter):
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        if source_addr:
+            pool_kwargs['source_address'] = (source_addr, 0)
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+locale_list = [
+    "us","gb","de","at","ch","fr","it","es","nl","se","no","dk","fi",
+    "ca","au","nz","jp","kr","sg","ae","be","ie","pt","cz","pl","hu",
+    "ro","gr","tr","tw","mx","br","ar","cl","co","pe","za","hk","th",
+    "my","id","ph","vn","in","pk","bd","lk","np","ke","ng","gh","tz",
+    "ug","ua","kz","rs","bg","hr","sk","si","sa","qa","kw","om","jo",
+    "lb","ma","tn","dz","ad","ag","ai","al","am","ao","aq","as","aw",
+    "ax","az","ba","bb","bf","bh","bi","bj","bl","bm","bn","bo","bq",
+    "bs","bt","bv","bw","bz","cc","cd","cf","cg","ci","ck","cm","cv",
+    "cw","cx","cy","dj","dm","do","ec","ee","eg","eh","fj","fk","fm",
+    "fo","ga","gd","ge","gf","gg","gi","gl","gm","gn","gp","gq","gs",
+    "gt","gu","gw","gy","hm","hn","ht","il","im","io","iq","is","je",
+    "jm","kg","kh","ki","km","kn","ky","la","lc","li","lr","ls","lt",
+    "lu","lv","ly","mc","md","me","mf","mg","mh","mk","ml","mn","mo",
+    "mp","mq","mr","ms","mt","mu","mv","mw","mz","na","nc","ne","nf",
+    "ni","nr","nu","pa","pf","pg","pm","pn","pr","ps","pw","py","re",
+    "rw","sb","sc","sd","sh","sj","sl","sm","sn","so","sr","ss","st",
+    "sv","sx","sz","tc","td","tf","tg","tj","tk","tl","to","tt","tv",
+    "um","uy","uz","va","vc","vg","vi","vu","wf","ws","ye","yt","zm",
+    "zw","cn","ir","kp","sy","tm","er","cu","ve","ru","by","af","mm"
+]
 
 def create_app():
     app = Flask(__name__)
@@ -160,6 +190,11 @@ def sanitize_video_title(video_title: str) -> str:
 
 def follow_redirect(base_url, remote_addr):
     session = requests.Session()
+    if source_addr:
+        adapter = SourceAddressAdapter()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+    
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -188,6 +223,11 @@ def get_title_from_url(base_url_init, remote_addr):
     path = urlparse(base_url).path
 
     session = requests.Session()
+    if source_addr:
+        adapter = SourceAddressAdapter()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -206,7 +246,7 @@ def get_title_from_url(base_url_init, remote_addr):
     })
 
     segments = [s for s in path.split('/') if s]
-    video_id = next((s for s in segments if re.search(r'rrn:content', s)), None)
+    video_id = next((re.search(r'(rrn:content:.*)', s).group(1) for s in segments if 'rrn:content' in s), None)
 
     # V5.1 API Fix:
     # If the URL path already contains an `rrn:content` identifier, we can skip
@@ -219,10 +259,10 @@ def get_title_from_url(base_url_init, remote_addr):
             stream_id = (json_data.get('links') or [{}])[0].get('id')
             locale = "int"
 
-            def scan_single_locale(locale, video_id):
+            def scan_stream_id_locale(locale, video_id):
                 tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/{locale}/{video_id}"
                 try:
-                    response = requests.get(tv_api, timeout=5) 
+                    response = session.get(tv_api, timeout=5) 
                     if response.ok:
                         json_data = response.json()
                         links = json_data.get('links')
@@ -234,37 +274,25 @@ def get_title_from_url(base_url_init, remote_addr):
                     pass
                 return None
             
-            # If INT is not available detect regional versions.
+            def scan_title_locale(locale, video_id):
+                tv_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
+                try:
+                    response = session.get(tv_api, timeout=5)
+                    if response.ok:
+                        json_data = response.json()
+                        title = json_data.get('title')
+                        video_thumbnail = json_data.get('media_resources', {}).get('rbtv_display_art_landscape', {}).get('url')
+                        subheading_raw = json_data.get('subheading')
+                        if title:
+                            return {"locale": locale, "video_title_raw": title, "video_thumbnail": video_thumbnail, "subheading_raw": subheading_raw}
+                except Exception:
+                    pass
+                return None
+            
+            # If INT is not available detect regional versions for stream_id.
             if not stream_id:
-                locale_list = [
-                    'us', 'br', 'jp', 'de', 'gb', 'fr', 'kr', 'it', 'ca', 'es', 
-                    'pl', 'au', 'nl', 'se', 'be', 'ch', 'at', 'hk', 'sg', 'dk', 
-                    'fi', 'no', 'ie', 'nz', 'pt', 'il', 'gr', 'cz', 'ro', 'hu', 
-                    'in', 'id', 'mx', 'ng', 'ph', 'vn', 'pk', 'eg', 'za', 'co', 
-                    'th', 'my', 'ar', 'sa', 'iq', 'ma', 'pe', 'gh', 'uz', 'kz', 
-                    'dz', 'bd', 'ke', 'et', 'mm', 'lk', 'ua', 'cl', 've', 'ps',
-                    'ad', 'ae', 'ag', 'ai', 'al', 'am', 'ao', 'aq', 'as', 'aw', 
-                    'ax', 'ba', 'bb', 'bf', 'bg', 'bh', 'bi', 'bj', 'bl', 'bm', 
-                    'bn', 'bo', 'bq', 'bs', 'bt', 'bv', 'bw', 'bz', 'cc', 'cd', 
-                    'cg', 'ci', 'ck', 'cm', 'cr', 'cv', 'cw', 'cx', 'cy', 'dj', 
-                    'dm', 'do', 'ec', 'ee', 'fk', 'fm', 'fo', 'ga', 'gd', 'gf', 
-                    'gg', 'gi', 'gl', 'gm', 'gn', 'gp', 'gs', 'gt', 'gu', 'gw', 
-                    'gy', 'hm', 'hn', 'ht', 'im', 'io', 'is', 'je', 'jm', 'jo', 
-                    'ki', 'km', 'kn', 'kw', 'ky', 'lb', 'lc', 'li', 'lr', 'ls', 
-                    'lt', 'lu', 'lv', 'ly', 'mc', 'md', 'me', 'mf', 'mg', 'mh', 
-                    'mk', 'ml', 'mn', 'mo', 'mp', 'mq', 'mr', 'ms', 'mt', 'mu', 
-                    'mv', 'mw', 'mz', 'na', 'nc', 'ne', 'nf', 'ni', 'np', 'nr', 
-                    'nu', 'om', 'pa', 'pf', 'pg', 'pm', 'pn', 'pr', 'pw', 'py', 
-                    're', 'rw', 'sb', 'sc', 'sh', 'si', 'sj', 'sk', 'sl', 'sm', 
-                    'sn', 'so', 'sr', 'ss', 'st', 'sv', 'sx', 'sz', 'tc', 'tf', 
-                    'tg', 'tk', 'tl', 'tn', 'to', 'tt', 'tv', 'tz', 'ug', 'um', 
-                    'uy', 'va', 'vc', 'vg', 'vi', 'vu', 'wf', 'ws', 'ye', 'yt', 
-                    'zm', 'zw', 'cn', 'ru', 'ir', 'tr', 'by', 'kp', 'sy', 'cu',
-                    'er', 'tm', 'qa', 'af', 'sd', 'la', 'az', 'tj', 'gq', 'cf',
-                    'td'
-                ]
                 with ThreadPoolExecutor(max_workers=16) as executor:
-                    future_to_locale = {executor.submit(scan_single_locale, l, video_id): l for l in locale_list}
+                    future_to_locale = {executor.submit(scan_stream_id_locale, l, video_id): l for l in locale_list}
                     for future in as_completed(future_to_locale):
                         result = future.result()
                         if result:
@@ -273,21 +301,42 @@ def get_title_from_url(base_url_init, remote_addr):
                             executor.shutdown(wait=False, cancel_futures=True)
                             break
 
-            video_url_api = f"https://api-player.redbull.com/tv?videoId={stream_id}&locale=en&tenant=rbtv"
+            video_url_api = f"https://play.redbull.com/init/v1/rbtv/en/{locale}/personal_computer/http/{stream_id}"
             json_data = session.get(video_url_api, timeout=10).json()
-            video_url = json_data.get('videoUrl')
-            video_thumbnail = json_data.get('videoDetails').get('image')
-            video_title_raw = json_data.get('title')
+            video_url = json_data.get('manifest_url')
+            video_thumbnail = None
+            video_title_raw = None
             subheading = None
+
             try:
                 meta_url_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
-                meta_json = session.get(meta_url_api, timeout=10).json()
-                subheading_raw = meta_json.get('subheading')
+                response = session.get(meta_url_api, timeout=10)
+
+                # If INT is not available detect regional versions for metadata.
+                if not response.ok:
+                    with ThreadPoolExecutor(max_workers=16) as executor:
+                        future_to_locale = {executor.submit(scan_title_locale, l, video_id): l for l in locale_list}
+                        for future in as_completed(future_to_locale):
+                            result = future.result()
+                            if result:
+                                locale = result['locale']
+                                video_title_raw = result['video_title_raw']
+                                video_thumbnail = result['video_thumbnail']
+                                subheading_raw = result['subheading_raw']
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                break
+                else:
+                    meta_json = response.json()
+                    video_title_raw = meta_json.get('title')
+                    video_thumbnail = meta_json.get('media_resources', {}).get('rbtv_display_art_landscape', {}).get('url')
+                    subheading_raw = meta_json.get('subheading')
+
                 subheading = sanitize_video_title(subheading_raw) if subheading_raw else None
             except Exception:
-                pass
+                log_error(f"Unable to fetch metadata for [{video_id}], using randomized title", remote_addr)
+
             title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
-            return title, video_url, video_thumbnail, video_id, subheading
+            return title, video_url, video_thumbnail, video_id, subheading, base_url
         except Exception as e:
             log_info(f"V5.1 API lookup failed for [{video_id}], falling back to legacy API", remote_addr)
     else:
@@ -316,10 +365,10 @@ def get_title_from_url(base_url_init, remote_addr):
         video_url = json_data.get('videoUrl')
         video_title_raw = json_data.get('title')
         title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
-        return title, video_url, video_thumbnail, video_id.rsplit(':', 1)[0], None
+        return title, video_url, video_thumbnail, video_id.rsplit(':', 1)[0], None, base_url
     except Exception as e:
         log_error(f"Unable to fetch metadata, {e}", remote_addr)
-        return None, None, None, None, None
+        return None, None, None, None, None, base_url
 
 def get_video_duration(url, headers):
     try:
@@ -457,7 +506,7 @@ def create_stream():
         log_info(f"Metadata Cache Hit for [{video_id}]", request.remote_addr)
     else:
         log_info(f"Fetching metadata for [{base_url}]", request.remote_addr)
-        video_title, video_url, video_thumbnail, video_id, video_subheading = get_title_from_url(base_url, request.remote_addr)
+        video_title, video_url, video_thumbnail, video_id, video_subheading, base_url = get_title_from_url(base_url, request.remote_addr)
         if video_title:
             metadata = {
                 "title": video_title,
@@ -470,7 +519,7 @@ def create_stream():
     
     if not video_title or not video_url:
         log_error(f"Failed to extract M3U stream for [{base_url}]", request.remote_addr)
-        return jsonify({"status": "error", "message": "Could not fetch video data"}), 500
+        return jsonify({"status": "error", "message": "Unable to retrieve video stream. The source may be unavailable or geo-restricted."}), 500
     
     log_info(f"M3U Stream found for [{base_url}], Video_ID=[{video_id}] Title=[{video_title}], Subheading=[{video_subheading}] Stream=[{video_url}], Thumbnail=[{video_thumbnail}]", request.remote_addr)
 
@@ -511,16 +560,28 @@ def create_stream():
 
     cmd = [
         'yt-dlp',
+    ]
+
+    aria_args = f"aria2c:-x {download_connections} -s {download_connections} -k 1M --summary-interval=1"
+
+    if source_addr:
+        cmd.extend(['--source-address', source_addr])
+        aria_args += f" --interface={source_addr}"
+
+    cmd.extend([
         '--external-downloader', 'aria2c',
-        '--downloader-args', f"aria2c:-x {download_connections} -s {download_connections} -k 1M --summary-interval=1",
+        '--downloader-args', aria_args,
         '-o', mp4_path,
         '--remux-video', 'mp4',
         '--newline',
-        '--progress',
-        video_url
-    ]
+        '--progress'
+    ])
+
     for key, value in yt_headers.items():
         cmd.extend(['--add-header', f"{key}:{value}"])
+    
+    cmd.append('--')
+    cmd.append(video_url)
 
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     
@@ -559,7 +620,7 @@ def get_status():
         video_id = metadata.get('video_id')
         video_subheading = metadata.get('subheading')
     else:
-        video_title, video_url, video_thumbnail, video_id, video_subheading = get_title_from_url(base_url, request.remote_addr)
+        video_title, video_url, video_thumbnail, video_id, video_subheading, base_url = get_title_from_url(base_url, request.remote_addr)
         if video_title:
             r.set(f"url_map:{url_hash}", json.dumps({
                 "title": video_title, "video_id": video_id, "subheading": video_subheading, "url": video_url, "thumbnail": video_thumbnail
@@ -613,7 +674,7 @@ def download_video():
         video_id = metadata.get('video_id')
         video_subheading = metadata.get('subheading')
     else:
-        video_title, _, _, video_id, video_subheading = get_title_from_url(base_url, request.remote_addr)
+        video_title, _, _, video_id, video_subheading, base_url = get_title_from_url(base_url, request.remote_addr)
     
     if not video_title:
         return jsonify({"status": "error", "message": "Could not resolve video title"}), 500

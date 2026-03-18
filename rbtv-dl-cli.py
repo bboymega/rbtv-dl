@@ -13,6 +13,28 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+locale_list = [
+    "us","gb","de","at","ch","fr","it","es","nl","se","no","dk","fi",
+    "ca","au","nz","jp","kr","sg","ae","be","ie","pt","cz","pl","hu",
+    "ro","gr","tr","tw","mx","br","ar","cl","co","pe","za","hk","th",
+    "my","id","ph","vn","in","pk","bd","lk","np","ke","ng","gh","tz",
+    "ug","ua","kz","rs","bg","hr","sk","si","sa","qa","kw","om","jo",
+    "lb","ma","tn","dz","ad","ag","ai","al","am","ao","aq","as","aw",
+    "ax","az","ba","bb","bf","bh","bi","bj","bl","bm","bn","bo","bq",
+    "bs","bt","bv","bw","bz","cc","cd","cf","cg","ci","ck","cm","cv",
+    "cw","cx","cy","dj","dm","do","ec","ee","eg","eh","fj","fk","fm",
+    "fo","ga","gd","ge","gf","gg","gi","gl","gm","gn","gp","gq","gs",
+    "gt","gu","gw","gy","hm","hn","ht","il","im","io","iq","is","je",
+    "jm","kg","kh","ki","km","kn","ky","la","lc","li","lr","ls","lt",
+    "lu","lv","ly","mc","md","me","mf","mg","mh","mk","ml","mn","mo",
+    "mp","mq","mr","ms","mt","mu","mv","mw","mz","na","nc","ne","nf",
+    "ni","nr","nu","pa","pf","pg","pm","pn","pr","ps","pw","py","re",
+    "rw","sb","sc","sd","sh","sj","sl","sm","sn","so","sr","ss","st",
+    "sv","sx","sz","tc","td","tf","tg","tj","tk","tl","to","tt","tv",
+    "um","uy","uz","va","vc","vg","vi","vu","wf","ws","ye","yt","zm",
+    "zw","cn","ir","kp","sy","tm","er","cu","ve","ru","by","af","mm"
+]
+
 def sanitize_video_title(video_title: str) -> str:
     video_title = unicodedata.normalize("NFC", video_title)
     video_title = re.sub(r'[\\/*?:"<>|]', '_', video_title)
@@ -27,9 +49,12 @@ def format_size(num_bytes):
         num_bytes /= 1024
     return f"{num_bytes:.2f} TB"
 
-def download_stream(base_url_init, output_file=None):
+def download_stream(base_url_init, output_file=None, source_address=None):
     base_url = base_url_init
     session = requests.Session()
+    if source_address:
+        adapter = SourceAddressAdapter(source_address)
+
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -72,10 +97,10 @@ def download_stream(base_url_init, output_file=None):
         stream_id = (json_data.get('links') or [{}])[0].get('id')
         locale = "int"
 
-        def scan_single_locale(locale, video_id):
+        def scan_stream_id_locale(locale, video_id):
             tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/{locale}/{video_id}"
             try:
-                response = requests.get(tv_api, timeout=5) 
+                response = session.get(tv_api, timeout=5) 
                 if response.ok:
                     json_data = response.json()
                     links = json_data.get('links')
@@ -86,38 +111,26 @@ def download_stream(base_url_init, output_file=None):
             except Exception:
                 pass
             return None
+            
+        def scan_title_locale(locale, video_id):
+            tv_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
+            try:
+                response = session.get(tv_api, timeout=5)
+                if response.ok:
+                    json_data = response.json()
+                    title = json_data.get('title')
+                    video_thumbnail = json_data.get('media_resources', {}).get('rbtv_display_art_landscape', {}).get('url')
+                    subheading_raw = json_data.get('subheading')
+                    if title:
+                        return {"locale": locale, "video_title_raw": title, "video_thumbnail": video_thumbnail, "subheading_raw": subheading_raw}
+            except Exception:
+                pass
+            return None
         
-        # If INT is not available detect regional versions.
+        # If INT is not available detect regional versions for stream_id.
         if not stream_id:
-            locale_list = [
-                'us', 'br', 'jp', 'de', 'gb', 'fr', 'kr', 'it', 'ca', 'es', 
-                'pl', 'au', 'nl', 'se', 'be', 'ch', 'at', 'hk', 'sg', 'dk', 
-                'fi', 'no', 'ie', 'nz', 'pt', 'il', 'gr', 'cz', 'ro', 'hu', 
-                'in', 'id', 'mx', 'ng', 'ph', 'vn', 'pk', 'eg', 'za', 'co', 
-                'th', 'my', 'ar', 'sa', 'iq', 'ma', 'pe', 'gh', 'uz', 'kz', 
-                'dz', 'bd', 'ke', 'et', 'mm', 'lk', 'ua', 'cl', 've', 'ps',
-                'ad', 'ae', 'ag', 'ai', 'al', 'am', 'ao', 'aq', 'as', 'aw', 
-                'ax', 'ba', 'bb', 'bf', 'bg', 'bh', 'bi', 'bj', 'bl', 'bm', 
-                'bn', 'bo', 'bq', 'bs', 'bt', 'bv', 'bw', 'bz', 'cc', 'cd', 
-                'cg', 'ci', 'ck', 'cm', 'cr', 'cv', 'cw', 'cx', 'cy', 'dj', 
-                'dm', 'do', 'ec', 'ee', 'fk', 'fm', 'fo', 'ga', 'gd', 'gf', 
-                'gg', 'gi', 'gl', 'gm', 'gn', 'gp', 'gs', 'gt', 'gu', 'gw', 
-                'gy', 'hm', 'hn', 'ht', 'im', 'io', 'is', 'je', 'jm', 'jo', 
-                'ki', 'km', 'kn', 'kw', 'ky', 'lb', 'lc', 'li', 'lr', 'ls', 
-                'lt', 'lu', 'lv', 'ly', 'mc', 'md', 'me', 'mf', 'mg', 'mh', 
-                'mk', 'ml', 'mn', 'mo', 'mp', 'mq', 'mr', 'ms', 'mt', 'mu', 
-                'mv', 'mw', 'mz', 'na', 'nc', 'ne', 'nf', 'ni', 'np', 'nr', 
-                'nu', 'om', 'pa', 'pf', 'pg', 'pm', 'pn', 'pr', 'pw', 'py', 
-                're', 'rw', 'sb', 'sc', 'sh', 'si', 'sj', 'sk', 'sl', 'sm', 
-                'sn', 'so', 'sr', 'ss', 'st', 'sv', 'sx', 'sz', 'tc', 'tf', 
-                'tg', 'tk', 'tl', 'tn', 'to', 'tt', 'tv', 'tz', 'ug', 'um', 
-                'uy', 'va', 'vc', 'vg', 'vi', 'vu', 'wf', 'ws', 'ye', 'yt', 
-                'zm', 'zw', 'cn', 'ru', 'ir', 'tr', 'by', 'kp', 'sy', 'cu',
-                'er', 'tm', 'qa', 'af', 'sd', 'la', 'az', 'tj', 'gq', 'cf',
-                'td'
-            ]
             with ThreadPoolExecutor(max_workers=16) as executor:
-                future_to_locale = {executor.submit(scan_single_locale, l, video_id): l for l in locale_list}
+                future_to_locale = {executor.submit(scan_stream_id_locale, l, video_id): l for l in locale_list}
                 for future in as_completed(future_to_locale):
                     result = future.result()
                     if result:
@@ -126,18 +139,40 @@ def download_stream(base_url_init, output_file=None):
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
 
-        video_url_api = f"https://api-player.redbull.com/tv?videoId={stream_id}&locale=en&tenant=rbtv"
+        video_url_api = f"https://play.redbull.com/init/v1/rbtv/en/{locale}/personal_computer/http/{stream_id}"
         json_data = session.get(video_url_api, timeout=10).json()
-        video_url = json_data.get('videoUrl')
-        video_title_raw = json_data.get('title')
+        video_url = json_data.get('manifest_url')
+        video_thumbnail = None
+        video_title_raw = None
         subheading = None
+
         try:
             meta_url_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
-            meta_json = session.get(meta_url_api, timeout=10).json()
-            subheading_raw = meta_json.get('subheading')
+            response = session.get(meta_url_api, timeout=10)
+
+            # If INT is not available detect regional versions for metadata.
+            if not response.ok:
+                with ThreadPoolExecutor(max_workers=16) as executor:
+                    future_to_locale = {executor.submit(scan_title_locale, l, video_id): l for l in locale_list}
+                    for future in as_completed(future_to_locale):
+                        result = future.result()
+                        if result:
+                            locale = result['locale']
+                            video_title_raw = result['video_title_raw']
+                            video_thumbnail = result['video_thumbnail']
+                            subheading_raw = result['subheading_raw']
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+            else:
+                meta_json = response.json()
+                video_title_raw = meta_json.get('title')
+                video_thumbnail = meta_json.get('media_resources', {}).get('rbtv_display_art_landscape', {}).get('url')
+                subheading_raw = meta_json.get('subheading')
+
             subheading = sanitize_video_title(subheading_raw) if subheading_raw else None
         except Exception:
-            pass
+            log_error(f"Unable to fetch metadata for [{video_id}], using randomized title", remote_addr)
+
         video_title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
 
     else:
@@ -273,8 +308,9 @@ def download_stream(base_url_init, output_file=None):
             final_size = os.path.getsize(output_file)
             print(f"\r\033[KINFO: Successfully saved [{output_file}] ({format_size(final_size)})")
         else:
-            stderr_data = process.stderr.read().decode(errors='replace')
-            sys.stderr.write(f"\n\033[31mERROR: FFmpeg failed: {stderr_data}\033[0m\n")
+            stdout_data, stderr_data = process.communicate()
+            error_msg = stderr_data.decode(errors='replace') if stderr_data else "No error message captured."
+            sys.stderr.write(f"\n\033[31mERROR: FFmpeg failed: {error_msg}\033[0m\n")
 
     except KeyboardInterrupt:
         if process.poll() is None:
