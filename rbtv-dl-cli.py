@@ -52,8 +52,6 @@ def format_size(num_bytes):
 def download_stream(base_url_init, output_file=None, source_address=None):
     base_url = base_url_init
     session = requests.Session()
-    if source_address:
-        adapter = SourceAddressAdapter(source_address)
 
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
