@@ -378,69 +378,44 @@ def get_video_duration(url, headers):
         return None
 
 def monitor_progress(process, video_id, final_output_path, remote_addr):
-    total_frag_regex = re.compile(r"Total fragments:\s+(\d+)")
-    prefix_regex = re.compile(r"Destination: .*/(tmp[^.]+)")
+    frag_line = re.compile(r"\(frag\s+(\d+)\s*/\s*(\d+)\)", re.IGNORECASE)
+    prefix_regex = re.compile(r"Destination:\s+(.+)")
     
     total_fragments = 0
-    temp_dir = os.path.join(tempfile.gettempdir(), "rbtv-dl")
-    file_prefix = ""
-    stream_count = 0
+    completed_fragments = 0
     merging_started = False
+    file_prefix = ""
 
     for line in iter(process.stdout.readline, ''):
-        if not line: break
+        if not line:
+            break
         line = line.strip()
 
+        # Detect output filename
         if not file_prefix:
-            pf = prefix_regex.search(line)
-            if pf: 
-                file_prefix = pf.group(1)
+            m = prefix_regex.search(line)
+            if m:
+                file_prefix = os.path.basename(m.group(1))
 
-        tm = total_frag_regex.search(line)
-        if tm:
-            new_total = int(tm.group(1))
-            if new_total > 0:
-                total_fragments = new_total
-                stream_count += 1
-            continue
-            
-        if total_fragments > 0 and file_prefix and not merging_started:
-            try:
-                all_files = os.listdir(temp_dir)
-                completed_count = len([
-                    f for f in all_files 
-                    if f.startswith(file_prefix) 
-                    and "-Frag" in f 
-                    and not f.endswith(".aria2")
-                ])
+        # Match "(frag 9/425)" style
+        fm = frag_line.search(line)
+        if fm:
+            completed_fragments = int(fm.group(1))
+            total_fragments = int(fm.group(2))
 
-                if total_fragments == 0:
-                    continue
-                    
-                ratio = completed_count / total_fragments
-
-                if stream_count <= 1:
-                    total_percent = ratio * 90
-                    if ratio >= 1.0:
-                        total_percent = 99.9
-                else:
-                    total_percent = 90 + (ratio * 9)
+            if total_fragments > 0:
+                ratio = completed_fragments / total_fragments
+                percent = min(99.9, ratio * 95)
 
                 task = get_task(video_id)
-                if task:
-                    if total_percent >= 99.9:
-                        task["status"] = "finalizing"
-                        task["message"] = "consolidating"
-                        task["percent"] = 99.9
-                        set_task(video_id, task)
-                    elif total_percent > task.get("percent", 0):
-                        task["status"] = "converting"
-                        task["percent"] = total_percent
-                        set_task(video_id, task)
+                if task and percent > task.get("percent", 0):
+                    task["status"] = "converting"
+                    task["percent"] = percent
+                    set_task(video_id, task)
 
-            except Exception:
-                pass
+            continue
 
+        # Detect merging
         if "[Merger]" in line or "Merging formats" in line:
             if not merging_started:
                 merging_started = True
@@ -469,12 +444,10 @@ def monitor_progress(process, video_id, final_output_path, remote_addr):
     else:
         task["status"] = "failed"
         task["pid"] = None
-        if return_code in [-2, -15, 130]:
-            log_error(f"Task [{video_id}] was interrupted", remote_addr)
-        else:
-            log_error(f"Task [{video_id}] failed (Code: {return_code})", remote_addr)
+        log_error(f"Task [{video_id}] failed (Code: {return_code})", remote_addr)
 
     set_task(video_id, task)
+
 
 def run_purge_scheduler():
     while True:
