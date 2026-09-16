@@ -246,129 +246,504 @@ def get_title_from_url(base_url_init, remote_addr):
     })
 
     segments = [s for s in path.split('/') if s]
-    video_id = next((re.search(r'(rrn:content:.*)', s).group(1) for s in segments if 'rrn:content' in s), None)
 
-    # V5.1 API Fix:
-    # If the URL path already contains an `rrn:content` identifier, we can skip
-    # the usual lookup logic and directly query the Red Bull TV player API
-    # using that content ID to retrieve the video metadata.
-    if video_id:
+    # Detect the complete rrn:content ID directly from the Red Bull TV page.
+    content_match = re.search(
+        r'(rrn:content:(?:films|event-profiles|shows|episode-videos|videos|live-videos):[A-Za-z0-9-]+)',
+        path
+    )
+    content_id = content_match.group(1) if content_match else None
+
+    if content_id:
+        content_type = content_id.split(':')[2]
+
         try:
-            tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/int/{video_id}"
-            json_data = session.get(tv_api, timeout=10).json()
-            stream_id = (json_data.get('links') or [{}])[0].get('id')
-            locale = "int"
+            # ----------------------------------------------------------
+            # Helpers
+            # ----------------------------------------------------------
 
-            def scan_stream_id_locale(locale, video_id):
-                tv_api = f"https://tv-api.redbull.com/products/dynamic/v5.1/rbtv/en/{locale}/{video_id}"
+            def get_metadata_url(locale, content_id):
+                """
+                Return the latest metadata endpoint for the content type.
+                Event profiles and shows use dynamic/v5.2.
+                Playable video resources use products/v5.3.
+                """
+                if content_type in ("event-profiles", "shows"):
+                    return (
+                        f"https://tv-api.redbull.com/products/dynamic/v5.2/"
+                        f"rbtv/en/{locale}/{content_id}"
+                    )
+
+                return (
+                    f"https://tv-api.redbull.com/products/v5.3/"
+                    f"rbtv/en/{locale}/{content_id}"
+                )
+
+            def get_player_url(locale, content_id):
+                """
+                Build the player init endpoint.
+
+                Event-profile pages are resolved to a live-video ID before
+                reaching this helper, so all IDs passed here are playable.
+                """
+                return (
+                    f"https://play.redbull.com/init/v1/rbtv/"
+                    f"en/{locale}/personal_computer/http/{content_id}"
+                )
+
+            def get_stream_id_from_dynamic(locale, content_id):
+                """
+                Resolve event-profile/show -> playable child ID.
+
+                event-profiles:
+                    default_live_program / links[].id -> live-videos
+
+                shows:
+                    links[].id -> episode-videos
+                """
                 try:
-                    response = session.get(tv_api, timeout=5) 
+                    api_url = (
+                        f"https://tv-api.redbull.com/products/dynamic/v5.2/"
+                        f"rbtv/en/{locale}/{content_id}"
+                    )
+
+                    response = session.get(api_url, timeout=5)
+
                     if response.ok:
                         json_data = response.json()
-                        links = json_data.get('links')
-                        if links and len(links) > 0:
-                            s_id = links[0].get('id')
-                            if s_id:
-                                return {"locale": locale, "stream_id": s_id}
+
+                        # Event profile explicitly exposes the playable
+                        # program here.
+                        default_live_program = json_data.get(
+                            "default_live_program"
+                        )
+
+                        if (
+                            content_type == "event-profiles"
+                            and default_live_program
+                            and default_live_program.startswith(
+                                "rrn:content:live-videos:"
+                            )
+                        ):
+                            return default_live_program
+
+                        # Shows expose the playable episode through links.
+                        links = json_data.get("links") or []
+
+                        expected_type = {
+                            "event-profiles": "rrn:content:live-videos:",
+                            "shows": "rrn:content:episode-videos:"
+                        }.get(content_type)
+
+                        if expected_type:
+                            for link in links:
+                                link_id = link.get("id")
+
+                                if (
+                                    link_id
+                                    and link_id.startswith(expected_type)
+                                ):
+                                    return link_id
+
                 except Exception:
                     pass
+
                 return None
-            
-            def scan_title_locale(locale, video_id):
-                tv_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
+
+            def scan_stream_id_locale(locale, content_id):
+                """
+                Preserve the original locale scanning behavior.
+
+                For dynamic content, scan for a playable child ID.
+                For directly playable content, the content ID itself is
+                already the stream ID.
+                """
                 try:
-                    response = session.get(tv_api, timeout=5)
+                    if content_type in ("event-profiles", "shows"):
+                        stream_id = get_stream_id_from_dynamic(
+                            locale,
+                            content_id
+                        )
+
+                        if stream_id:
+                            return {
+                                "locale": locale,
+                                "stream_id": stream_id
+                            }
+
+                    else:
+                        api_url = (
+                            f"https://tv-api.redbull.com/products/v5.3/"
+                            f"rbtv/en/{locale}/{content_id}"
+                        )
+
+                        response = session.get(api_url, timeout=5)
+
+                        if response.ok:
+                            json_data = response.json()
+
+                            returned_id = json_data.get("id")
+
+                            if returned_id:
+                                return {
+                                    "locale": locale,
+                                    "stream_id": returned_id
+                                }
+
+                except Exception:
+                    pass
+
+                return None
+
+            def scan_title_locale(locale, stream_id):
+                """
+                Preserve the original title/thumbnail locale scan.
+
+                Metadata is always requested using the actual playable
+                stream ID. This is important for event profiles and shows,
+                where the page ID itself isn't the playable ID.
+                """
+                try:
+                    api_url = (
+                        f"https://tv-api.redbull.com/products/v5.3/"
+                        f"rbtv/en/{locale}/{stream_id}"
+                    )
+
+                    response = session.get(api_url, timeout=5)
+
                     if response.ok:
                         json_data = response.json()
-                        title = json_data.get('title')
-                        video_thumbnail = json_data.get('media_resources', {}).get('rbtv_display_art_landscape', {}).get('url')
-                        subheading_raw = json_data.get('subheading')
+
+                        title = json_data.get("title")
+
+                        video_thumbnail = (
+                            json_data.get("media_resources", {})
+                            .get("rbtv_display_art_landscape", {})
+                            .get("url")
+                        )
+
+                        subheading_raw = json_data.get("subheading")
+
                         if title:
-                            return {"locale": locale, "video_title_raw": title, "video_thumbnail": video_thumbnail, "subheading_raw": subheading_raw}
+                            return {
+                                "locale": locale,
+                                "video_title_raw": title,
+                                "video_thumbnail": video_thumbnail,
+                                "subheading_raw": subheading_raw
+                            }
+
                 except Exception:
                     pass
+
                 return None
-            
-            # If INT is not available detect regional versions for stream_id.
+
+            # ----------------------------------------------------------
+            # Resolve the initial locale and stream ID.
+            #
+            # First try INT exactly like the previous implementation.
+            # If that doesn't resolve, scan locale_list concurrently.
+            # ----------------------------------------------------------
+
+            locale = "US"
+            stream_id = None
+
+            if content_type in ("event-profiles", "shows"):
+                # Dynamic endpoint first, using INT.
+                stream_id = get_stream_id_from_dynamic(
+                    "US",
+                    content_id
+                )
+
+            else:
+                # Directly playable content uses its own ID.
+                stream_id = content_id
+
+                # Verify that INT actually resolves the resource.
+                try:
+                    api_url = (
+                        f"https://tv-api.redbull.com/products/v5.3/"
+                        f"rbtv/en/US/{content_id}"
+                    )
+
+                    response = session.get(api_url, timeout=10)
+
+                    if not response.ok:
+                        stream_id = None
+
+                except Exception:
+                    stream_id = None
+
+            # ----------------------------------------------------------
+            # If INT is not available, detect regional version.
+            # This preserves your original ThreadPoolExecutor scan.
+            # ----------------------------------------------------------
+
             if not stream_id:
                 with ThreadPoolExecutor(max_workers=16) as executor:
-                    future_to_locale = {executor.submit(scan_stream_id_locale, l, video_id): l for l in locale_list}
+                    future_to_locale = {
+                        executor.submit(
+                            scan_stream_id_locale,
+                            l,
+                            content_id
+                        ): l
+                        for l in locale_list
+                    }
+
                     for future in as_completed(future_to_locale):
                         result = future.result()
+
                         if result:
-                            stream_id = result['stream_id']
-                            locale = result['locale']
-                            executor.shutdown(wait=False, cancel_futures=True)
+                            stream_id = result["stream_id"]
+                            locale = result["locale"].upper()
+
+                            executor.shutdown(
+                                wait=False,
+                                cancel_futures=True
+                            )
                             break
 
-            video_url_api = f"https://play.redbull.com/init/v1/rbtv/en/{locale}/personal_computer/http/{stream_id}"
-            json_data = session.get(video_url_api, timeout=10).json()
-            video_url = json_data.get('manifest_url')
+            if not stream_id:
+                raise ValueError(
+                    f"Unable to resolve stream ID for [{content_id}]"
+                )
+
+            # ----------------------------------------------------------
+            # Fetch manifest.
+            #
+            # device_group=group_5 is retained for event-profile/live
+            # resolution, matching the current endpoint behavior.
+            # ----------------------------------------------------------
+
+            video_url_api = get_player_url(
+                locale,
+                stream_id
+            )
+
+            if content_type == "event-profiles":
+                video_url_api += "?device_group=group_5"
+
+            video_response = session.get(
+                video_url_api,
+                timeout=10
+            )
+            video_response.raise_for_status()
+
+            video_json = video_response.json()
+            video_url = video_json.get("manifest_url")
+
+            # ----------------------------------------------------------
+            # Fetch metadata for the actual playable stream.
+            # ----------------------------------------------------------
+
             video_thumbnail = None
             video_title_raw = None
             subheading = None
+            subheading_raw = None
 
             try:
-                meta_url_api = f"https://tv-api.redbull.com/products/v5.1/rbtv/en/{locale}/{stream_id}"
-                response = session.get(meta_url_api, timeout=10)
+                meta_url = (
+                    f"https://tv-api.redbull.com/products/v5.3/"
+                    f"rbtv/en/{locale}/{stream_id}"
+                )
 
-                # If INT is not available detect regional versions for metadata.
+                response = session.get(
+                    meta_url,
+                    timeout=10
+                )
+
+                # If selected locale metadata is unavailable,
+                # preserve the original locale scanning behavior.
                 if not response.ok:
                     with ThreadPoolExecutor(max_workers=16) as executor:
-                        future_to_locale = {executor.submit(scan_title_locale, l, video_id): l for l in locale_list}
+                        future_to_locale = {
+                            executor.submit(
+                                scan_title_locale,
+                                l,
+                                stream_id
+                            ): l
+                            for l in locale_list
+                        }
+
                         for future in as_completed(future_to_locale):
                             result = future.result()
+
                             if result:
-                                locale = result['locale']
-                                video_title_raw = result['video_title_raw']
-                                video_thumbnail = result['video_thumbnail']
-                                subheading_raw = result['subheading_raw']
-                                executor.shutdown(wait=False, cancel_futures=True)
+                                locale = result["locale"].upper()
+                                video_title_raw = result[
+                                    "video_title_raw"
+                                ]
+                                video_thumbnail = result[
+                                    "video_thumbnail"
+                                ]
+                                subheading_raw = result[
+                                    "subheading_raw"
+                                ]
+
+                                executor.shutdown(
+                                    wait=False,
+                                    cancel_futures=True
+                                )
                                 break
+
                 else:
                     meta_json = response.json()
-                    video_title_raw = meta_json.get('title')
-                    video_thumbnail = meta_json.get('media_resources', {}).get('rbtv_display_art_landscape', {}).get('url')
-                    subheading_raw = meta_json.get('subheading')
 
-                subheading = sanitize_video_title(subheading_raw) if subheading_raw else None
+                    video_title_raw = meta_json.get("title")
+
+                    video_thumbnail = (
+                        meta_json.get("media_resources", {})
+                        .get("rbtv_display_art_landscape", {})
+                        .get("url")
+                    )
+
+                    subheading_raw = meta_json.get("subheading")
+
+                subheading = (
+                    sanitize_video_title(subheading_raw)
+                    if subheading_raw
+                    else None
+                )
+
             except Exception:
-                log_error(f"Unable to fetch metadata for [{video_id}], using randomized title", remote_addr)
+                log_error(
+                    f"Unable to fetch metadata for [{content_id}], "
+                    f"using randomized title",
+                    remote_addr
+                )
 
-            title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
-            return title, video_url, video_thumbnail, video_id, subheading, base_url
+            title = (
+                sanitize_video_title(video_title_raw)
+                if video_title_raw
+                else 'rbtv-' + ''.join(
+                    random.choices(string.ascii_letters, k=8)
+                )
+            )
+
+            return (
+                title,
+                video_url,
+                video_thumbnail,
+                stream_id,
+                subheading,
+                base_url
+            )
+
         except Exception as e:
-            log_info(f"V5.1 API lookup failed for [{video_id}], falling back to legacy API", remote_addr)
+            log_info(
+                f"Latest API lookup failed for [{content_id}], "
+                f"falling back to legacy API: {e}",
+                remote_addr
+            )
+
     else:
-        log_info(f"Falling back to legacy API for [{base_url}]", remote_addr)
-    
+        log_info(
+            f"Falling back to legacy API for [{base_url}]",
+            remote_addr
+        )
+
+    # ------------------------------------------------------------------
+    # Legacy API -- unchanged
+    # ------------------------------------------------------------------
+
     url = path.lstrip('/')
     category_raw = path.rstrip('/').split('/')[-2]
+
     category_map = {
         "live": "live-videos",
         "episodes": "episode-videos",
         "films": "films",
         "videos": "videos"
     }
+
     category = category_map.get(category_raw, category_raw)
 
     try:
-        loc_res = session.get("https://www.redbull.com/v3/config/pages?url=" + url, timeout=10)
-        locales = loc_res.json().get("data", {}).get("domainConfig", {}).get("supportedLocales", [])
-        selected_locale = next((l for l in locales if "en" in l.lower()), locales[0])
-        meta_url = f"https://www.redbull.com/v3/api/graphql/v1/v3/feed/{selected_locale}?disableUsageRestrictions=true&filter[type]={category}&filter[uriSlug]={url.split('/')[-1]}&rb3Schema=v1:pageConfig&rb3PageUrl=/{url}"
-        json_data = session.get(meta_url, timeout=10).json()
+        loc_res = session.get(
+            "https://www.redbull.com/v3/config/pages?url=" + url,
+            timeout=10
+        )
+
+        locales = (
+            loc_res.json()
+            .get("data", {})
+            .get("domainConfig", {})
+            .get("supportedLocales", [])
+        )
+
+        selected_locale = next(
+            (l for l in locales if "en" in l.lower()),
+            locales[0]
+        )
+
+        meta_url = (
+            f"https://www.redbull.com/v3/api/graphql/v1/v3/feed/"
+            f"{selected_locale}"
+            f"?disableUsageRestrictions=true"
+            f"&filter[type]={category}"
+            f"&filter[uriSlug]={url.split('/')[-1]}"
+            f"&rb3Schema=v1:pageConfig"
+            f"&rb3PageUrl=/{url}"
+        )
+
+        json_data = session.get(
+            meta_url,
+            timeout=10
+        ).json()
+
         video_id = json_data.get('data').get('id')
-        video_thumbnail = json_data.get('data').get('pageMeta').get('og:image')
-        video_url_api = f"https://api-player.redbull.com/rbcom/videoresource?videoId={video_id}&localeMixing={selected_locale}"
-        json_data = session.get(video_url_api, timeout=10).json()
+
+        video_thumbnail = (
+            json_data.get('data')
+            .get('pageMeta')
+            .get('og:image')
+        )
+
+        video_url_api = (
+            f"https://api-player.redbull.com/rbcom/videoresource"
+            f"?videoId={video_id}"
+            f"&localeMixing={selected_locale}"
+        )
+
+        json_data = session.get(
+            video_url_api,
+            timeout=10
+        ).json()
+
         video_url = json_data.get('videoUrl')
         video_title_raw = json_data.get('title')
-        title = sanitize_video_title(video_title_raw) if video_title_raw else 'rbtv-' + ''.join(random.choices(string.ascii_letters, k=8))
-        return title, video_url, video_thumbnail, video_id.rsplit(':', 1)[0], None, base_url
+
+        title = (
+            sanitize_video_title(video_title_raw)
+            if video_title_raw
+            else 'rbtv-' + ''.join(
+                random.choices(string.ascii_letters, k=8)
+            )
+        )
+
+        return (
+            title,
+            video_url,
+            video_thumbnail,
+            video_id.rsplit(':', 1)[0],
+            None,
+            base_url
+        )
+
     except Exception as e:
-        log_error(f"Unable to fetch metadata, {e}", remote_addr)
-        return None, None, None, None, None, base_url
+        log_error(
+            f"Unable to fetch metadata, {e}",
+            remote_addr
+        )
+
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            base_url
+        )
+
 
 def get_video_duration(url, headers):
     try:
