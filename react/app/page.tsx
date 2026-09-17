@@ -57,7 +57,7 @@ export default function VideoConverter() {
   const [fileSize, setFileSize] = useState<number>(0);
   const [videoTitle, setVideoTitle] = useState<string | null>(null);
   const [error, setError] = useState<null | string>(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState('');
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [progression, setProgression] = useState(0);
@@ -591,20 +591,23 @@ export default function VideoConverter() {
    */
 
   const handleCopy = (
-    targetStreamUrl?: string
-  ) => {
+    targetStreamUrl?: string,
+    targetId?: string
+    ) => {
     const value = targetStreamUrl || streamUrl;
 
-    if (!value) return;
+    if (!value || !targetId) return;
 
     navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(
-        () => setCopied(false),
-        1000
-      );
+        setCopiedId(targetId);
+
+        setTimeout(() => {
+        setCopiedId((current) =>
+            current === targetId ? null : current
+        );
+        }, 1000);
     });
-  };
+    };
 
   /*
    * ---------------------------------------------------------
@@ -883,12 +886,12 @@ export default function VideoConverter() {
                     type="button"
                     className="btn btn-sm btn-outline-success"
                     onClick={() =>
-                      handleCopy(item.streamUrl)
+                      handleCopy(item.streamUrl, item.id)
                     }
                   >
                     <FontAwesomeIcon
                       icon={
-                        copied
+                        copiedId === item.id
                           ? faCheck
                           : faCopy
                       }
