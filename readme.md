@@ -10,7 +10,7 @@ Built with **React/Next.js**, **Python-Flask** and just enough rizz to make it w
 # Quick Start: Web UI (Docker):
 Spin it up like it’s Friday night:
 ```
-docker run --rm -d -p 8080:8080 bboymega/rbtv-dl:4.1
+docker run --rm -d -p 8080:8080 bboymega/rbtv-dl:5.0
 ```
 
 Then open:
@@ -55,6 +55,10 @@ pip3 install -r requirements.txt
 
 # Changlog
 ```
+## 2026-09-17
+- Refactor video metadata retrieval for v5.3 upstream API support.
+- Added in-browser conversion history storage.
+
 ## 2026-03-17
 - Added locale auto-detection.
 
